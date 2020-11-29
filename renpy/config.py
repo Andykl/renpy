@@ -1060,6 +1060,9 @@ fbo_size = (4096, 4096)
 # Names to ignore the redefinition of.
 lint_ignore_redefine = [ "gui.about" ]
 
+# Should Drag treat overlap of transparent areas as successful?
+drag_respects_transparent = False
+
 del os
 del collections
 

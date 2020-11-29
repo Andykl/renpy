@@ -204,6 +204,8 @@ class Drag(renpy.display.core.Displayable, renpy.python.RevertableObject):
     # The time a click started, or None if a click is not in progress.
     click_time = None
 
+    st = 0
+
     def __init__(self,
                  d=None,
                  drag_name=None,
@@ -243,7 +245,7 @@ class Drag(renpy.display.core.Displayable, renpy.python.RevertableObject):
         self.activated = activated
         self.alternate = alternate
         self.drag_offscreen = drag_offscreen
-        # if mouse_drop_check is True (default False), the drop will not
+        # if mouse_drop is True (default False), the drop will not
         #  use default major overlap between droppables but instead
         #  will use mouse coordinates to select droppable
         self.mouse_drop = mouse_drop
@@ -563,6 +565,7 @@ class Drag(renpy.display.core.Displayable, renpy.python.RevertableObject):
 
         self.last_x = self.x
         self.last_y = self.y
+        self.st = st
         self.at = at
 
         return rv
@@ -898,7 +901,7 @@ class DragGroup(renpy.display.layout.MultiBox):
         """
 
         max_overlap = 0
-        rv = 0
+        rv = None
 
         joined_set = set(joined)
 
@@ -919,6 +922,11 @@ class DragGroup(renpy.display.layout.MultiBox):
                 r2 = (c.x, c.y, c.w, c.h)
 
                 overlap = rect_overlap_area(r1, r2)
+                if overlap <= max_overlap or overlap < self.min_overlap:
+                    continue
+
+                if not renpy.config.drag_respects_transparent:
+                    texture_overlap_area(d, c)
 
                 if (
                     overlap >= max_overlap and
@@ -992,10 +1000,97 @@ def rect_overlap_area(r1, r2):
     maxtop = max(y1, y2)
     minbottom = min(y1 + h1, y2 + h2)
 
-    if minright < maxleft:
+    if minright <= maxleft:
         return 0
 
-    if minbottom < maxtop:
+    if minbottom <= maxtop:
         return 0
 
     return (minright - maxleft) * (minbottom - maxtop)
+
+renpy.register_shader("renpy.overlap", variables="""
+    uniform float u_lod_bias;
+    uniform sampler2D tex0;
+    uniform sampler2D tex1;
+    attribute vec2 a_tex_coord;
+    varying vec2 v_tex_coord;
+""", vertex_300="""
+    v_tex_coord = a_tex_coord;
+""", fragment_300="""
+    vec4 color0 = texture2D(tex0, v_tex_coord.st, u_lod_bias);
+    vec4 color1 = texture2D(tex1, v_tex_coord.st, u_lod_bias);
+
+    if (0 < color0.a && 0 < color1.a) {
+        gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+    else
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    }
+""")
+
+def texture_overlap_area(drag, drop):
+    """
+    Returns the number of pixels by which the opaque areas of drag and drop
+    overlap.
+    """
+
+    child = drop.style.child
+    if child is None:
+        child = drop.child
+    droprend = renpy.render(child, drop.w, drop.h, drop.st, drop.at)
+
+    child = drag.style.child
+    if child is None:
+        child = drag.child
+    dragrend = renpy.render(child, drag.w, drag.h, drag.st, drag.at)
+
+    dragx, dragy = (drag.x - drop.x, drag.y - drop.y)
+    width, height = min(drop.w, drag.w), min(drop.h, drag.h)
+    drop_crop = [0, 0, width, height]
+    drag_crop = [0, 0, width, height]
+
+    if dragx <= 0:
+        drag_crop[0] = -dragx
+    else:
+        drop_crop[0] = dragx
+
+    if dragy <= 0:
+        drag_crop[1] = -dragy
+    else:
+        drop_crop[1] = dragy
+
+    if dragx + drag.w <= drop.w:
+        drop_crop[2] = min(width, dragx + drag.w)
+    elif dragx > 0:
+        drag_crop[2] = min(width, drop.w - dragx)
+
+    if dragy + drag.h <= drop.h:
+        drop_crop[3] = min(height, dragy + drag.h)
+    elif dragy > 0:
+        drag_crop[3] = min(height, drop.h - dragy)
+
+    width = min(drop_crop[2], drag_crop[2])
+    height = min(drop_crop[3], drag_crop[3])
+    drop_crop[2] = drag_crop[2] = width
+    drop_crop[3] = drag_crop[3] = height
+
+    if drop_crop != [0, 0, drop.w, drop.h]:
+        droprend = droprend.subsurface(drop_crop)
+
+    if drag_crop != [0, 0, drag.w, drag.h]:
+        dragrend = dragrend.subsurface(drag_crop)
+
+    rend = renpy.Render(width, height)
+    rend.blit(droprend, (0, 0))
+    rend.blit(dragrend, (0, 0))
+    rend.mesh = renpy.gl2.gl2mesh2.Mesh2.texture_rectangle(
+        0.0, 0.0, width, height,
+        0.0, 0.0, 1.0, 1.0,
+    )
+    rend.add_shader("renpy.overlap")
+
+    There must be something like:
+    cdef GLhalf pixels[width * height]
+    glReadPixels(0, 0, width, height, GL_RED, GL_HALF_FLOAT, pixels)
+    rv = int(sum(pixels)
+    free(pixels)
+    return rv
